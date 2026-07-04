@@ -36,6 +36,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/keys/", s.handleKeys)
 	mux.HandleFunc("/stats", s.handleStats)
 	mux.HandleFunc("/clear", s.handleClear)
+	mux.HandleFunc("/health", s.handleHealth)
 
 	var handler http.Handler = mux
 	handler = s.authMiddleware(handler)
@@ -53,6 +54,12 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Bypass authentication for public health check endpoint
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if s.authToken != "" {
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
@@ -274,6 +281,19 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 	s.respondJSON(w, http.StatusOK, map[string]string{
 		"status":  "success",
 		"message": "cache cleared",
+	})
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		s.respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	s.respondJSON(w, http.StatusOK, map[string]string{
+		"status":  "healthy",
+		"version": "1.1.0",
 	})
 }
 

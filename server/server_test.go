@@ -189,3 +189,26 @@ func TestServerAuthorization(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 }
+
+func TestServerHealth(t *testing.T) {
+	s := NewServer(poros.NewAnyCache(poros.Config[string, any]{}), "my_test_secret_key")
+	handler := s.Handler()
+
+	// Request /health without any Authorization header -> Should pass with 200 OK
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode health response: %v", err)
+	}
+
+	if body["status"] != "healthy" {
+		t.Errorf("expected healthy status, got %s", body["status"])
+	}
+}

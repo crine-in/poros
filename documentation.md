@@ -292,6 +292,25 @@ curl -i -X POST \
 
 ---
 
+### 8. Health Check (`GET /health`)
+
+A public endpoint that bypasses security checks, designed for cloud load balancers and deployment runtimes (e.g. Render).
+
+#### Bash `curl` Example
+```bash
+curl -i http://127.0.0.1:8080/health
+```
+
+#### Response (`200 OK`)
+```json
+{
+  "status": "healthy",
+  "version": "1.1.0"
+}
+```
+
+---
+
 ## 💻 Client Integration Examples
 
 ### 1. Go (Standard Library)

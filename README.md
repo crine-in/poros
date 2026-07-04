@@ -115,17 +115,18 @@ Key configuration settings:
 go run cmd/porosd/main.go -port 8080 -shards 32 -capacity 100000 -max-item-size 10MB -max-memory 512MB -policy 0
 ```
 
-### API Endpoints Spec (Requires `Authorization: Bearer <token>`)
+### API Endpoints Spec (Requires `Authorization: Bearer <token>` unless marked public)
 
-| Method     | Endpoint                | Description                  | Payload Example                 |
-| :--------- | :---------------------- | :--------------------------- | :------------------------------ |
-| **GET**    | `/keys/{key}`           | Retrieve key value           | _None_                          |
-| **POST**   | `/keys/{key}`           | Set or update value          | `{"value": "bar", "ttl": "5m"}` |
-| **DELETE** | `/keys/{key}`           | Delete key                   | _None_                          |
-| **POST**   | `/keys/{key}/increment` | Increment numeric value      | `{"delta": 5}`                  |
-| **POST**   | `/keys/{key}/decrement` | Decrement numeric value      | `{"delta": 2}`                  |
-| **GET**    | `/stats`                | Get runtime cache statistics | _None_                          |
-| **POST**   | `/clear`                | Clear all keys               | _None_                          |
+| Method     | Endpoint                | Description                  | Payload Example                 | Public? |
+| :--------- | :---------------------- | :--------------------------- | :------------------------------ | :------ |
+| **GET**    | `/health`               | Service health diagnostics   | _None_                          | Yes     |
+| **GET**    | `/keys/{key}`           | Retrieve key value           | _None_                          | No      |
+| **POST**   | `/keys/{key}`           | Set or update value          | `{"value": "bar", "ttl": "5m"}` | No      |
+| **DELETE** | `/keys/{key}`           | Delete key                   | _None_                          | No      |
+| **POST**   | `/keys/{key}/increment` | Increment numeric value      | `{"delta": 5}`                  | No      |
+| **POST**   | `/keys/{key}/decrement` | Decrement numeric value      | `{"delta": 2}`                  | No      |
+| **GET**    | `/stats`                | Get runtime cache statistics | _None_                          | No      |
+| **POST**   | `/clear`                | Clear all keys               | _None_                          | No      |
 
 ---
 
