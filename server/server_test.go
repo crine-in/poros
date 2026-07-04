@@ -7,12 +7,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/crine/poros"
+	"github.com/crine-in/poros"
 )
 
 func setupTestServer() *Server {
 	c := poros.New(poros.Config[string, any]{})
-	return NewServer(c)
+	return NewServer(c, "")
 }
 
 func TestServerKV(t *testing.T) {
@@ -152,5 +152,36 @@ func TestServerStatsAndClear(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestServerAuthorization(t *testing.T) {
+	srv := NewServer(poros.New(poros.Config[string, any]{}), "my_test_secret_key")
+	handler := srv.Handler()
+
+	// 1. Request without header -> 401
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+
+	// 2. Request with invalid token -> 401
+	req = httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.Header.Set("Authorization", "Bearer wrong_token")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+
+	// 3. Request with valid token -> 200
+	req = httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.Header.Set("Authorization", "Bearer my_test_secret_key")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
 	}
 }

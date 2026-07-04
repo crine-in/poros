@@ -8,20 +8,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crine/poros"
+	"github.com/crine-in/poros"
 )
 
 // Server wraps a poros.Cache and exposes REST HTTP endpoints.
 type Server struct {
-	cache  poros.Cache[string, any]
-	logger *log.Logger
+	cache     poros.Cache[string, any]
+	authToken string
+	logger    *log.Logger
 }
 
 // NewServer creates a new HTTP cache server instance.
-func NewServer(cache poros.Cache[string, any]) *Server {
+func NewServer(cache poros.Cache[string, any], authToken string) *Server {
 	return &Server{
-		cache:  cache,
-		logger: log.Default(),
+		cache:     cache,
+		authToken: authToken,
+		logger:    log.Default(),
 	}
 }
 
@@ -31,7 +33,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/keys/", s.handleKeys)
 	mux.HandleFunc("/stats", s.handleStats)
 	mux.HandleFunc("/clear", s.handleClear)
-	return s.loggingMiddleware(mux)
+
+	var handler http.Handler = mux
+	handler = s.authMiddleware(handler)
+	handler = s.loggingMiddleware(handler)
+	return handler
 }
 
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
@@ -39,6 +45,24 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		s.logger.Printf("%s %s %s %s", r.Method, r.RequestURI, r.RemoteAddr, time.Since(start))
+	})
+}
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken != "" {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+				s.respondError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			if token != s.authToken {
+				s.respondError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

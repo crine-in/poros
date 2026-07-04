@@ -42,14 +42,18 @@ Poros is a concurrent, sharded in-memory cache. It splits its internal storage i
 ## 🏎️ Core Mechanics
 
 ### 1. Zero-Allocation Routing
-In standard Go, passing a generic key (`K`) into type-independent functions requires casting it to an `any` interface (`any(key)`), which results in a heap allocation due to boxing. 
+
+In standard Go, passing a generic key (`K`) into type-independent functions requires casting it to an `any` interface (`any(key)`), which results in a heap allocation due to boxing.
 To achieve sub-nanosecond lookups under load, Poros maps type-specific hasher functions (e.g. `maphash.String` for string keys) to the internal `hashFn` during cache startup using `unsafe.Pointer` casting. This ensures:
+
 - **0 allocations** on reads.
 - **0 allocations** on mixed workloads.
 - Minimal garbage collection overhead.
 
 ### 2. $O(1)$ LFU Eviction Policy
+
 Poros implements LFU eviction using a bucketing system inspired by the $O(1)$ LFU paper:
+
 1. Keys with the same access frequency reside in the same bucket.
 2. Buckets are chained together in a doubly-linked frequency list.
 3. Accessing a key promotes its entry by moving it to the next frequency bucket in $O(1)$ time.
@@ -68,6 +72,7 @@ For multi-gigabyte cache storage, pointer-rich map entries can overwhelm Go's ga
 ```
 
 When writing, if the space at the end of the buffer is insufficient:
+
 1. A dummy gap entry is written at the end.
 2. The `writeOffset` wraps back to `0`.
 3. If writing overwrites the `readOffset` (oldest record), the oldest entry is automatically evicted, advancing the `readOffset`.
@@ -76,12 +81,23 @@ When writing, if the space at the end of the buffer is insufficient:
 
 ## 🌐 HTTP REST API Endpoint Specification
 
+> [!IMPORTANT]
+> If `POROS_KEY` is configured in `.env`, all HTTP API requests must include the header `Authorization: Bearer <key>`. Request rejection results in a `401 Unauthorized` response:
+> ```json
+> {
+>   "status": "error",
+>   "message": "unauthorized"
+> }
+> ```
+
 ### 1. Set Cache Key (`POST /keys/{key}`)
+
 Writes or overwrites a cache entry. You can supply an optional Time-To-Live (TTL) duration string.
 
 #### Bash `curl` Example
 ```bash
 curl -X POST \
+  -H "Authorization: Bearer your_secret_key" \
   -H "Content-Type: application/json" \
   -d '{"value": "crine_session_token_xyz", "ttl": "15m"}' \
   http://127.0.0.1:8080/keys/user_101
@@ -102,11 +118,14 @@ curl -X POST \
 ---
 
 ### 2. Get Cache Key (`GET /keys/{key}`)
+
 Retrieves a stored value. If the key has expired or does not exist, a `404 Not Found` is returned.
 
 #### Bash `curl` Example
 ```bash
-curl -i http://127.0.0.1:8080/keys/user_101
+curl -i \
+  -H "Authorization: Bearer your_secret_key" \
+  http://127.0.0.1:8080/keys/user_101
 ```
 
 #### Response (`200 OK`)
@@ -129,11 +148,14 @@ curl -i http://127.0.0.1:8080/keys/user_101
 ---
 
 ### 3. Delete Cache Key (`DELETE /keys/{key}`)
+
 Removes a key from the cache.
 
 #### Bash `curl` Example
 ```bash
-curl -i -X DELETE http://127.0.0.1:8080/keys/user_101
+curl -i -X DELETE \
+  -H "Authorization: Bearer your_secret_key" \
+  http://127.0.0.1:8080/keys/user_101
 ```
 
 #### Response (`200 OK`)
@@ -155,11 +177,13 @@ curl -i -X DELETE http://127.0.0.1:8080/keys/user_101
 ---
 
 ### 4. Increment Counter (`POST /keys/{key}/increment`)
+
 Increments an atomic numeric counter. If the key does not exist, it is initialized to `0` and then incremented.
 
 #### Bash `curl` Example
 ```bash
 curl -X POST \
+  -H "Authorization: Bearer your_secret_key" \
   -H "Content-Type: application/json" \
   -d '{"delta": 5}' \
   http://127.0.0.1:8080/keys/page_views/increment
@@ -179,11 +203,13 @@ curl -X POST \
 ---
 
 ### 5. Decrement Counter (`POST /keys/{key}/decrement`)
+
 Decrements an atomic numeric counter.
 
 #### Bash `curl` Example
 ```bash
 curl -X POST \
+  -H "Authorization: Bearer your_secret_key" \
   -H "Content-Type: application/json" \
   -d '{"delta": 2}' \
   http://127.0.0.1:8080/keys/page_views/decrement
@@ -203,11 +229,14 @@ curl -X POST \
 ---
 
 ### 6. Get Server Metrics (`GET /stats`)
+
 Returns runtime metrics for the cache instance.
 
 #### Bash `curl` Example
 ```bash
-curl -i http://127.0.0.1:8080/stats
+curl -i \
+  -H "Authorization: Bearer your_secret_key" \
+  http://127.0.0.1:8080/stats
 ```
 
 #### Response (`200 OK`)
@@ -224,11 +253,14 @@ curl -i http://127.0.0.1:8080/stats
 ---
 
 ### 7. Clear Cache (`POST /clear`)
+
 Wipes all keys from the cache.
 
 #### Bash `curl` Example
 ```bash
-curl -i -X POST http://127.0.0.1:8080/clear
+curl -i -X POST \
+  -H "Authorization: Bearer your_secret_key" \
+  http://127.0.0.1:8080/clear
 ```
 
 #### Response (`200 OK`)
@@ -244,6 +276,7 @@ curl -i -X POST http://127.0.0.1:8080/clear
 ## 💻 Client Integration Examples
 
 ### 1. Go (Standard Library)
+
 ```go
 package main
 
@@ -271,6 +304,7 @@ func main() {
 ```
 
 ### 2. Python (Requests)
+
 ```python
 import requests
 
@@ -286,20 +320,21 @@ print(response.json())
 ```
 
 ### 3. Node.js (Fetch API)
+
 ```javascript
-const url = 'http://127.0.0.1:8080/keys/my_key';
+const url = "http://127.0.0.1:8080/keys/my_key";
 
 // Set Key
 fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: 'js_client', ttl: '5m' })
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ value: "js_client", ttl: "5m" }),
 })
-.then(res => res.json())
-.then(console.log);
+  .then((res) => res.json())
+  .then(console.log);
 
 // Get Key
 fetch(url)
-.then(res => res.json())
-.then(console.log);
+  .then((res) => res.json())
+  .then(console.log);
 ```

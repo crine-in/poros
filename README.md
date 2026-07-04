@@ -1,7 +1,7 @@
 # Poros ☄️
 
-[![Go Version](https://img.shields.io/github/go-mod/go-version/crine/poros?style=flat-square)](https://go.dev/)
-[![Go Reference](https://pkg.go.dev/badge/github.com/crine/poros.svg)](https://pkg.go.dev/github.com/crine/poros)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/crine-in/poros?style=flat-square)](https://go.dev/)
+[![Go Reference](https://pkg.go.dev/badge/github.com/crine-in/poros.svg)](https://pkg.go.dev/github.com/crine-in/poros)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
 **Poros** is a high-performance, low-latency, and memory-safe in-memory key-value cache library and service developed for CRINE infrastructure. Built from the ground up to solve Go's Garbage Collector latency spikes under high throughput, Poros offers a type-safe generic cache along with a zero-allocation, pointerless flat-byte ring-buffer cache.
@@ -28,7 +28,7 @@
 ## 📦 Installation
 
 ```bash
-go get github.com/crine/poros
+go get github.com/crine-in/poros
 ```
 
 ---
@@ -36,13 +36,14 @@ go get github.com/crine/poros
 ## ⚡ Quick Start
 
 ### 1. In-Memory Generic Cache
+
 ```go
 package main
 
 import (
 	"fmt"
 	"time"
-	"github.com/crine/poros"
+	"github.com/crine-in/poros"
 )
 
 func main() {
@@ -66,12 +67,13 @@ func main() {
 ```
 
 ### 2. Zero-GC `ByteCache`
+
 ```go
 package main
 
 import (
 	"fmt"
-	"github.com/crine/poros"
+	"github.com/crine-in/poros"
 )
 
 func main() {
@@ -83,7 +85,7 @@ func main() {
 	defer bc.Close()
 
 	bc.Set("image_blob", []byte{0xff, 0xd8, 0xff, 0xe0}, 0)
-	
+
 	val, err := bc.Get("image_blob")
 	if err == nil {
 		fmt.Printf("Loaded blob size: %d bytes\n", len(val))
@@ -97,21 +99,29 @@ func main() {
 
 Poros includes a production-ready HTTP server executable to expose the cache as a standalone daemon.
 
+### Environment Configuration (.env)
+The daemon loads its configuration from a `.env` file at the root. Copy the template to start:
+```bash
+cp .env.example .env
+```
+Ensure `POROS_KEY` is configured. If present, all HTTP API endpoints require the header `Authorization: Bearer <key>`.
+
 ### Start the Server
 ```bash
 go run cmd/porosd/main.go -port 8080 -shards 32 -capacity 100000 -policy 0
 ```
 
-### API Endpoints Spec
-| Method | Endpoint | Description | Payload Example |
-| :--- | :--- | :--- | :--- |
-| **GET** | `/keys/{key}` | Retrieve key value | *None* |
-| **POST** | `/keys/{key}` | Set or update value | `{"value": "bar", "ttl": "5m"}` |
-| **DELETE** | `/keys/{key}` | Delete key | *None* |
-| **POST** | `/keys/{key}/increment` | Increment numeric value | `{"delta": 5}` |
-| **POST** | `/keys/{key}/decrement` | Decrement numeric value | `{"delta": 2}` |
-| **GET** | `/stats` | Get runtime cache statistics | *None* |
-| **POST** | `/clear` | Clear all keys | *None* |
+### API Endpoints Spec (Requires `Authorization: Bearer <token>`)
+
+| Method     | Endpoint                | Description                  | Payload Example                 |
+| :--------- | :---------------------- | :--------------------------- | :------------------------------ |
+| **GET**    | `/keys/{key}`           | Retrieve key value           | _None_                          |
+| **POST**   | `/keys/{key}`           | Set or update value          | `{"value": "bar", "ttl": "5m"}` |
+| **DELETE** | `/keys/{key}`           | Delete key                   | _None_                          |
+| **POST**   | `/keys/{key}/increment` | Increment numeric value      | `{"delta": 5}`                  |
+| **POST**   | `/keys/{key}/decrement` | Decrement numeric value      | `{"delta": 2}`                  |
+| **GET**    | `/stats`                | Get runtime cache statistics | _None_                          |
+| **POST**   | `/clear`                | Clear all keys               | _None_                          |
 
 ---
 
@@ -120,11 +130,13 @@ go run cmd/porosd/main.go -port 8080 -shards 32 -capacity 100000 -policy 0
 Benchmarks run under high multi-threaded parallel workloads (12-core CPU, Go 1.24.4):
 
 ### Read Operations (Parallel GET)
+
 - **`sync.Map`**: `8.81 ns/op` (0 B/op, 0 allocs/op)
 - **`Poros`**: `93.20 ns/op` (**0 B/op**, **0 allocs/op**)
 - **Single Mutex Map**: `75.99 ns/op` (0 B/op, 0 allocs/op)
 
 ### Write Operations (Parallel SET)
+
 - **`Poros`**: `111.5 ns/op` (**24 B/op**, **1 alloc/op**)
 - **`sync.Map`**: `91.90 ns/op` (72 B/op, 3 allocs/op)
 - **Single Mutex Map**: `201.0 ns/op` (8 B/op, 0 allocs/op)
@@ -132,6 +144,7 @@ Benchmarks run under high multi-threaded parallel workloads (12-core CPU, Go 1.2
 > Under write concurrency, **Poros is 1.8x faster than a single-mutex map** and uses **3x less memory than `sync.Map`** per operation.
 
 ### Mixed Workload (90% Read, 10% Write)
+
 - **`Poros`**: `71.94 ns/op` (**0 B/op**, **0 allocs/op**)
 - **`sync.Map`**: `16.57 ns/op` (7 B/op, 0 allocs/op)
 - **Single Mutex Map**: `46.06 ns/op` (0 B/op, 0 allocs/op)
@@ -145,6 +158,7 @@ Benchmarks run under high multi-threaded parallel workloads (12-core CPU, Go 1.2
 Exposing the cache service as an HTTP REST endpoint, we subjected the server to a high-concurrency stress test with **100 concurrent workers** under full parallel loads on an AMD Ryzen 5 CPU:
 
 ### 1. Write Throughput (100% POST)
+
 - **Total Requests**: 47,738 (in 5s)
 - **Throughput**: **9,522.79 req/sec**
 - **Success Rate**: **100.00%**
@@ -152,6 +166,7 @@ Exposing the cache service as an HTTP REST endpoint, we subjected the server to 
 - **p99 Latency**: `29.26 ms`
 
 ### 2. Read Throughput (100% GET)
+
 - **Total Requests**: 40,513 (in 5s)
 - **Throughput**: **8,078.73 req/sec**
 - **Success Rate**: **100.00%**
@@ -159,6 +174,7 @@ Exposing the cache service as an HTTP REST endpoint, we subjected the server to 
 - **p99 Latency**: `28.68 ms`
 
 ### 3. Mixed Workload (90% Read, 10% Write)
+
 - **Total Requests**: 32,289 (in 5s)
 - **Throughput**: **6,422.44 req/sec**
 - **Success Rate**: **100.00%**
