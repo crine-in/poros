@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/crine/poros/policy"
+	"github.com/crine-in/poros/policy"
 )
 
 type entry[V any] struct {

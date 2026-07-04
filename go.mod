@@ -1,3 +1,3 @@
-module github.com/crine/poros
+module github.com/crine-in/poros
 
 go 1.24.4

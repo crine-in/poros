@@ -11,7 +11,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/crine/poros/singleflight"
+	"github.com/crine-in/poros/singleflight"
 )
 
 type cacheImpl[K comparable, V any] struct {
@@ -25,7 +25,6 @@ type cacheImpl[K comparable, V any] struct {
 	loaderGroup singleflight.Group[K, V]
 	hashFn      func(K) uint64
 }
-
 
 // AnyCache is a helper type for a cache with string keys and any value.
 type AnyCache = Cache[string, any]
@@ -265,7 +264,7 @@ func nextPowerOfTwo(v int) int {
 	if v <= 1 {
 		return 1
 	}
-	return 1 << (bits.Len(uint(v-1)))
+	return 1 << (bits.Len(uint(v - 1)))
 }
 
 func hashKey[K comparable](key K, seed maphash.Seed) uint64 {

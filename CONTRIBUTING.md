@@ -1,19 +1,22 @@
 # Contributing to Poros
 
-Thank you for your interest in contributing to **Poros**! As an essential infrastructure component at CRINE, we maintain high standards for performance, lock safety, and allocation-free mechanics.
+Thank you for your interest in contributing to **Poros**! As an essential infrastructure component at crine-in, we maintain high standards for performance, lock safety, and allocation-free mechanics.
 
 ---
 
 ## 🛠️ Developer Setup
 
 ### Prerequisites
+
 - **Go**: Version 1.20 or newer (built and validated with Go 1.24).
 - **Git**: Version control setup.
 
 ### Getting the Code
+
 Clone the repository:
+
 ```bash
-git clone https://github.com/crine/poros.git
+git clone https://github.com/crine-in/poros.git
 cd poros
 ```
 
@@ -32,16 +35,21 @@ cd poros
 Before proposing any changes, verify that your updates pass all unit tests and do not introduce performance regressions or memory allocations.
 
 ### Run Unit Tests (with Race Detector)
+
 Always run tests with the `-race` detector enabled to verify concurrency safety:
+
 ```bash
 go test -v -race ./...
 ```
 
 ### Run Performance Benchmarks
+
 If you modify code in `cache.go`, `shard.go`, or the eviction policies, verify that throughput and memory statistics do not degrade:
+
 ```bash
 go test -bench=. -benchmem
 ```
+
 Verify that the `allocs/op` for `BenchmarkGet` and `BenchmarkMixed` remains at `0` for string-keyed configs.
 
 ---
