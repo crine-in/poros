@@ -1,171 +1,305 @@
-# Poros Technical Documentation
+# Poros Developer Reference & API Documentation
 
-This document describes the design, implementation, and API specifications of the **Poros** high-performance in-memory cache library.
+Welcome to the **Poros** developer reference manual. This document provides detailed information on internal sharding architecture, eviction policy math, memory layouts for the zero-GC `ByteCache`, and a complete, developer-friendly specification of the REST API endpoints accompanied by copy-pasteable `curl` commands.
 
 ---
 
 ## 🏛️ System Architecture
 
-Poros is structured to balance low-latency operations with flexible lifecycle management (expirations and evictions). The core component, `Cache[K, V]`, scales concurrently using an internal array of shards:
+Poros is a concurrent, sharded in-memory cache. It splits its internal storage into multiple mutex-protected shards, routing keys dynamically using process-seeded hashing.
 
 ```
-                  +-----------------------------------+
-                  |           poros.Cache             |
-                  +-----------------------------------+
-                                    |
-                                    v (Hash Router: Hash(Key) & Mask)
-     +------------------------------+------------------------------+
-     |                              |                              |
-     v                              v                              v
-+---------+                    +---------+                    +---------+
-| Shard 0 |                    | Shard 1 |                    | Shard N |
-+---------+                    +---------+                    +---------+
-| - Mutex |                    | - Mutex |                    | - Mutex |
-| - Map   |                    | - Map   |                    | - Map   |
-| - LRU/  |                    | - LRU/  |                    | - LRU/  |
-|   LFU   |                    |   LFU   |                    |   LFU   |
-+---------+                    +---------+                    +---------+
+                              +-----------------------------------+
+                              |         Client Request            |
+                              +-----------------------------------+
+                                                |
+                                                v
+                              +-----------------------------------+
+                              |     Hash Routing (unsafe Cast)    |
+                              |   Key -> string/int64 -> uint64   |
+                              +-----------------------------------+
+                                                |
+                                                v
+                              +-----------------------------------+
+                              |       Idx = Hash & ShardMask      |
+                              +-----------------------------------+
+                                                |
+                      +-------------------------+-------------------------+
+                      |                                                   |
+                      v                                                   v
+           +---------------------+                             +---------------------+
+           |      Shard 0        |                             |      Shard N-1      |
+           +---------------------+                             +---------------------+
+           | - Read/Write Mutex  |                             | - Read/Write Mutex  |
+           | - Native Go Map     |                             | - Native Go Map     |
+           | - Pluggable Evictor |                             | - Pluggable Evictor |
+           | - Expiration Heap   |                             | - Expiration Heap   |
+           +---------------------+                             +---------------------+
 ```
 
 ---
 
-## ⚙️ Core Components
+## 🏎️ Core Mechanics
 
-### 1. Hash Routing and Sharding
-- **Process-Seeded Hash**: Hashing uses Go's `hash/maphash` package initialized with a process-lifetime seed (`maphash.MakeSeed()`). This provides robust resistance against Hash-DoS vulnerability attacks where malicious actors attempt to feed keys that trigger map collisions.
-- **Power-of-Two Shards**: The number of shards is always forced to a power of two. This optimizes key-to-shard routing by replacing the slow modulo operation (`hash % shards`) with a fast bitwise AND (`hash & mask`).
-- **Zero-Allocation Routing**: When creating a cache, a type-assertion router converts function pointers at compile time. This permits passing type-safe keys (like `string` or `int64`) directly to native hashers, bypassing interface wrapper heap allocations (`any(key)` boxing).
+### 1. Zero-Allocation Routing
+In standard Go, passing a generic key (`K`) into type-independent functions requires casting it to an `any` interface (`any(key)`), which results in a heap allocation due to boxing. 
+To achieve sub-nanosecond lookups under load, Poros maps type-specific hasher functions (e.g. `maphash.String` for string keys) to the internal `hashFn` during cache startup using `unsafe.Pointer` casting. This ensures:
+- **0 allocations** on reads.
+- **0 allocations** on mixed workloads.
+- Minimal garbage collection overhead.
 
-### 2. Eviction Policies
-Eviction algorithms reside under the `policy/` package and implement the `Evictor[K]` interface.
-- **LRU (Least Recently Used)**: Utilizes a custom doubly-linked list. Every read or write promotes the element to the front. The element at the tail is evicted when the capacity limit is reached.
-- **FIFO (First In First Out)**: Uses a queue built from a doubly-linked list. Elements are pushed to the back during insertion and popped from the front during eviction. Reads do not alter queue ordering.
-- **$O(1)$ LFU (Least Frequently Used)**: Implemented using a bucketing algorithm inspired by the "An $O(1)$ LFU Cache Eviction Algorithm" paper. Keys are grouped into frequency nodes linked in a master list. Accessing a key promotes it to a node with a higher frequency count. If the bucket list has no higher node, one is created. Eviction pops elements from the lowest frequency node. This operates in constant $O(1)$ time for reads, writes, and evictions.
-
-### 3. TTL / TTI Sliding Expiration
-- **Time-To-Live (TTL)**: Fixed expiration. An entry is expired after a static duration from its write time.
-- **Time-To-Idle (TTI)**: Sliding window expiration. An entry's expiration time is pushed forward upon read or update.
-- **Lazy Eviction**: Expired keys are checked on-access (`Get`) and removed immediately if they have expired.
-- **Active Janitor Sweeper**: A background cleaner goroutine ticks at a regular interval (`JanitorInterval`), locking individual shards one-by-one to sweep and delete expired keys, keeping memory footprints stable.
+### 2. $O(1)$ LFU Eviction Policy
+Poros implements LFU eviction using a bucketing system inspired by the $O(1)$ LFU paper:
+1. Keys with the same access frequency reside in the same bucket.
+2. Buckets are chained together in a doubly-linked frequency list.
+3. Accessing a key promotes its entry by moving it to the next frequency bucket in $O(1)$ time.
+4. When eviction is triggered, the key is evicted from the tail of the lowest frequency bucket in $O(1)$ time.
 
 ---
 
-## ⚡ Zero-GC `ByteCache` Ring Buffer
+## 💾 Zero-GC `ByteCache` Layout
 
-Standard Go maps store pointers. When a map grows to millions of entries, the Go garbage collector spends significant CPU time scanning the map pointers during GC cycles.
-
-`ByteCache` solves this by storing raw byte payloads inside a single pre-allocated flat byte array ring buffer (`[]byte`) per shard:
+For multi-gigabyte cache storage, pointer-rich map entries can overwhelm Go's garbage collector. `ByteCache` addresses this by allocating a single, flat byte array (`[]byte`) per shard and packing entries sequentially:
 
 ```
-ByteCache Shard Buffer Layout:
 +------------------+------------------+-------------------+--------------------+------------------------+-------------------------+
-| entryLen (4B)    | entryHash (8B)   | keyLen (2B)       | valLen (4B)        | expiresAt (8B)         | keyBytes (keyLen)       | ...
+| entryLen (4B)    | entryHash (8B)   | keyLen (2B)       | valLen (4B)        | expiresAt (8B)         | keyBytes (keyLen)       | valBytes
 +------------------+------------------+-------------------+--------------------+------------------------+-------------------------+
 ```
 
-### Memory Wrapping & Eviction Mechanics:
-- When a new byte slice is set, `ByteCache` writes the layout metadata, the key bytes, and value bytes sequentially at `writeOffset`.
-- If the entry does not fit at the end of the buffer, `writeOffset` wraps back to the beginning (`0`), writing a dummy marker at the trailing gap.
-- During writes, `ByteCache` checks if the new write block overlaps with `readOffset` (which points to the oldest stored entry). If it overlaps, it automatically evicts the oldest entry, moving `readOffset` forward, until enough space is cleared.
+When writing, if the space at the end of the buffer is insufficient:
+1. A dummy gap entry is written at the end.
+2. The `writeOffset` wraps back to `0`.
+3. If writing overwrites the `readOffset` (oldest record), the oldest entry is automatically evicted, advancing the `readOffset`.
 
 ---
 
 ## 🌐 HTTP REST API Endpoint Specification
 
-The HTTP Cache Service exposes a REST API to manage cache entries.
+### 1. Set Cache Key (`POST /keys/{key}`)
+Writes or overwrites a cache entry. You can supply an optional Time-To-Live (TTL) duration string.
 
-### 1. Set Cache Key
-- **Method / Path**: `POST /keys/{key}`
-- **Request Headers**: `Content-Type: application/json`
-- **Request Body**:
-  ```json
-  {
-    "value": "user_session_token_123",
-    "ttl": "15m"
-  }
-  ```
-- **Response**: `200 OK`
-  ```json
-  {
-    "status": "success",
-    "message": "key set successfully"
-  }
-  ```
+#### Bash `curl` Example
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"value": "crine_session_token_xyz", "ttl": "15m"}' \
+  http://127.0.0.1:8080/keys/user_101
+```
 
-### 2. Get Cache Key
-- **Method / Path**: `GET /keys/{key}`
-- **Response**: `200 OK`
-  ```json
-  {
-    "key": "session_id",
-    "value": "user_session_token_123",
-    "ttl_remaining": "14m52s"
-  }
-  ```
-- **Error Responses**:
-  - `404 Not Found` if key does not exist or has expired.
+#### JSON Request Payload
+- `value` (Any, Required): The data payload to store (supports strings, numbers, arrays, or objects).
+- `ttl` (String, Optional): Duration format (e.g., `10s`, `15m`, `2h`, `0s` = no expiration).
 
-### 3. Delete Cache Key
-- **Method / Path**: `DELETE /keys/{key}`
-- **Response**: `200 OK`
-  ```json
-  {
-    "status": "success",
-    "message": "key deleted"
-  }
-  ```
+#### Response (`200 OK`)
+```json
+{
+  "status": "success",
+  "message": "key set successfully"
+}
+```
 
-### 4. Increment Counter
-- **Method / Path**: `POST /keys/{key}/increment`
-- **Request Body**:
-  ```json
-  {
-    "delta": 5
-  }
-  ```
-- **Response**: `200 OK`
-  ```json
-  {
-    "key": "page_hits",
-    "value": 15
-  }
-  ```
+---
 
-### 5. Decrement Counter
-- **Method / Path**: `POST /keys/{key}/decrement`
-- **Request Body**:
-  ```json
-  {
-    "delta": 2
-  }
-  ```
-- **Response**: `200 OK`
-  ```json
-  {
-    "key": "active_users",
-    "value": 88
-  }
-  ```
+### 2. Get Cache Key (`GET /keys/{key}`)
+Retrieves a stored value. If the key has expired or does not exist, a `404 Not Found` is returned.
 
-### 6. Get Metrics / Stats
-- **Method / Path**: `GET /stats`
-- **Response**: `200 OK`
-  ```json
-  {
-    "hits": 10582,
-    "misses": 412,
-    "sets": 1209,
-    "evictions": 54,
-    "expirations": 103
-  }
-  ```
+#### Bash `curl` Example
+```bash
+curl -i http://127.0.0.1:8080/keys/user_101
+```
 
-### 7. Clear Cache
-- **Method / Path**: `POST /clear`
-- **Response**: `200 OK`
-  ```json
-  {
-    "status": "success",
-    "message": "cache cleared"
-  }
-  ```
+#### Response (`200 OK`)
+```json
+{
+  "key": "user_101",
+  "value": "crine_session_token_xyz",
+  "ttl_remaining": "14m58.2s"
+}
+```
+
+#### Error Response (`404 Not Found`)
+```json
+{
+  "status": "error",
+  "message": "key not found"
+}
+```
+
+---
+
+### 3. Delete Cache Key (`DELETE /keys/{key}`)
+Removes a key from the cache.
+
+#### Bash `curl` Example
+```bash
+curl -i -X DELETE http://127.0.0.1:8080/keys/user_101
+```
+
+#### Response (`200 OK`)
+```json
+{
+  "status": "success",
+  "message": "key deleted"
+}
+```
+
+#### Error Response (`404 Not Found`)
+```json
+{
+  "status": "error",
+  "message": "key not found"
+}
+```
+
+---
+
+### 4. Increment Counter (`POST /keys/{key}/increment`)
+Increments an atomic numeric counter. If the key does not exist, it is initialized to `0` and then incremented.
+
+#### Bash `curl` Example
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"delta": 5}' \
+  http://127.0.0.1:8080/keys/page_views/increment
+```
+
+#### JSON Request Payload
+- `delta` (Integer, Optional): The numeric value to add (defaults to `1` if omitted).
+
+#### Response (`200 OK`)
+```json
+{
+  "key": "page_views",
+  "value": 5
+}
+```
+
+---
+
+### 5. Decrement Counter (`POST /keys/{key}/decrement`)
+Decrements an atomic numeric counter.
+
+#### Bash `curl` Example
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"delta": 2}' \
+  http://127.0.0.1:8080/keys/page_views/decrement
+```
+
+#### JSON Request Payload
+- `delta` (Integer, Optional): The numeric value to subtract (defaults to `1` if omitted).
+
+#### Response (`200 OK`)
+```json
+{
+  "key": "page_views",
+  "value": 3
+}
+```
+
+---
+
+### 6. Get Server Metrics (`GET /stats`)
+Returns runtime metrics for the cache instance.
+
+#### Bash `curl` Example
+```bash
+curl -i http://127.0.0.1:8080/stats
+```
+
+#### Response (`200 OK`)
+```json
+{
+  "hits": 10243,
+  "misses": 341,
+  "sets": 1502,
+  "evictions": 14,
+  "expirations": 42
+}
+```
+
+---
+
+### 7. Clear Cache (`POST /clear`)
+Wipes all keys from the cache.
+
+#### Bash `curl` Example
+```bash
+curl -i -X POST http://127.0.0.1:8080/clear
+```
+
+#### Response (`200 OK`)
+```json
+{
+  "status": "success",
+  "message": "cache cleared"
+}
+```
+
+---
+
+## 💻 Client Integration Examples
+
+### 1. Go (Standard Library)
+```go
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"net/http"
+)
+
+func main() {
+	url := "http://127.0.0.1:8080/keys/my_key"
+	payload := []byte(`{"value": "go_developer", "ttl": "5m"}`)
+
+	// POST /set
+	resp, _ := http.Post(url, "application/json", bytes.NewBuffer(payload))
+	resp.Body.Close()
+
+	// GET
+	resp, _ = http.Get(url)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Println(string(body))
+}
+```
+
+### 2. Python (Requests)
+```python
+import requests
+
+url = "http://127.0.0.1:8080/keys/my_key"
+
+# Set Key
+response = requests.post(url, json={"value": "python_script", "ttl": "5m"})
+print(response.json())
+
+# Get Key
+response = requests.get(url)
+print(response.json())
+```
+
+### 3. Node.js (Fetch API)
+```javascript
+const url = 'http://127.0.0.1:8080/keys/my_key';
+
+// Set Key
+fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: 'js_client', ttl: '5m' })
+})
+.then(res => res.json())
+.then(console.log);
+
+// Get Key
+fetch(url)
+.then(res => res.json())
+.then(console.log);
+```
