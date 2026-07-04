@@ -128,12 +128,16 @@ func TestServerStatsAndClear(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 
-	var stats poros.Stats
+	var stats struct {
+		Cache struct {
+			Sets int64 `json:"sets"`
+		} `json:"cache"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
 		t.Fatalf("failed to decode stats: %v", err)
 	}
-	if stats.Sets != 1 {
-		t.Errorf("expected sets count 1, got %d", stats.Sets)
+	if stats.Cache.Sets != 1 {
+		t.Errorf("expected sets count 1, got %d", stats.Cache.Sets)
 	}
 
 	// Clear cache

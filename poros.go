@@ -48,11 +48,13 @@ var (
 
 // Stats tracks cache metrics.
 type Stats struct {
-	Hits       int64 `json:"hits"`
-	Misses     int64 `json:"misses"`
-	Sets       int64 `json:"sets"`
-	Evictions  int64 `json:"evictions"`
-	Expirations int64 `json:"expirations"`
+	Hits         int64 `json:"hits"`
+	Misses       int64 `json:"misses"`
+	Sets         int64 `json:"sets"`
+	Evictions    int64 `json:"evictions"`
+	Expirations  int64 `json:"expirations"`
+	RejectedSets int64 `json:"rejected_sets"`
+	MemoryBytes  int64 `json:"memory_bytes"`
 }
 
 // Config represents cache configuration.
@@ -61,7 +63,9 @@ type Config[K comparable, V any] struct {
 	DefaultTTL        time.Duration
 	DefaultTTI        time.Duration
 	EvictionPolicy    EvictionType
-	Capacity          int // max items per cache (total capacity)
+	Capacity          int   // max items per cache (total capacity)
+	MaxItemSize       int64 // max size of an individual item in bytes
+	MaxMemory         int64 // max memory cache is allowed to use in bytes
 	JanitorInterval   time.Duration
 	OnEvicted         func(key K, val V, reason EvictionReason)
 	Loader            func(ctx context.Context, key K) (V, error)

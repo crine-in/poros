@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ type Server struct {
 	cache     poros.Cache[string, any]
 	authToken string
 	logger    *log.Logger
+	startTime time.Time
 }
 
 // NewServer creates a new HTTP cache server instance.
@@ -24,6 +26,7 @@ func NewServer(cache poros.Cache[string, any], authToken string) *Server {
 		cache:     cache,
 		authToken: authToken,
 		logger:    log.Default(),
+		startTime: time.Now(),
 	}
 }
 
@@ -219,8 +222,45 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats := s.cache.Stats()
-	s.respondJSON(w, http.StatusOK, stats)
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
+	cStats := s.cache.Stats()
+
+	var hitRatio float64
+	totalRequests := cStats.Hits + cStats.Misses
+	if totalRequests > 0 {
+		hitRatio = float64(cStats.Hits) / float64(totalRequests)
+	}
+
+	detailedStats := map[string]any{
+		"cache": map[string]any{
+			"hits":          cStats.Hits,
+			"misses":        cStats.Misses,
+			"sets":          cStats.Sets,
+			"evictions":     cStats.Evictions,
+			"expirations":   cStats.Expirations,
+			"rejected_sets": cStats.RejectedSets,
+			"memory_bytes":  cStats.MemoryBytes,
+			"hit_ratio":     hitRatio,
+			"total_keys":    s.cache.Len(),
+		},
+		"system": map[string]any{
+			"heap_alloc_bytes":   mem.HeapAlloc,
+			"heap_sys_bytes":     mem.HeapSys,
+			"total_alloc_bytes":  mem.TotalAlloc,
+			"num_gc":             mem.NumGC,
+			"active_goroutines":  runtime.NumGoroutine(),
+			"go_version":         runtime.Version(),
+			"cpu_cores":          runtime.NumCPU(),
+		},
+		"process": map[string]any{
+			"uptime":      time.Since(s.startTime).String(),
+			"uptime_secs": int64(time.Since(s.startTime).Seconds()),
+		},
+	}
+
+	s.respondJSON(w, http.StatusOK, detailedStats)
 }
 
 func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {

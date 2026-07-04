@@ -1,6 +1,7 @@
 package poros
 
 import (
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,17 +26,20 @@ func (e *entry[V]) isExpired(now time.Time, defaultTTI time.Duration) bool {
 }
 
 type shard[K comparable, V any] struct {
-	mu          sync.RWMutex
-	items       map[K]*entry[V]
-	policy      policy.Policy[K]
-	capacity    int
-	defaultTTL  time.Duration
-	defaultTTI  time.Duration
-	onEvictedCb func(key K, val V, reason EvictionReason)
-	stats       *Stats
+	mu            sync.RWMutex
+	items         map[K]*entry[V]
+	policy        policy.Policy[K]
+	capacity      int
+	maxItemSize   int64
+	maxMemory     int64
+	currentMemory int64
+	defaultTTL    time.Duration
+	defaultTTI    time.Duration
+	onEvictedCb   func(key K, val V, reason EvictionReason)
+	stats         *Stats
 }
 
-func newShard[K comparable, V any](capacity int, policyType EvictionType, defaultTTL, defaultTTI time.Duration, onEvicted func(key K, val V, reason EvictionReason), stats *Stats) *shard[K, V] {
+func newShard[K comparable, V any](capacity int, maxItemSize, maxMemory int64, policyType EvictionType, defaultTTL, defaultTTI time.Duration, onEvicted func(key K, val V, reason EvictionReason), stats *Stats) *shard[K, V] {
 	var pol policy.Policy[K]
 	switch policyType {
 	case EvictionLRU:
@@ -50,10 +54,54 @@ func newShard[K comparable, V any](capacity int, policyType EvictionType, defaul
 		items:       make(map[K]*entry[V]),
 		policy:      pol,
 		capacity:    capacity,
+		maxItemSize: maxItemSize,
+		maxMemory:   maxMemory,
 		defaultTTL:  defaultTTL,
 		defaultTTI:  defaultTTI,
 		onEvictedCb: onEvicted,
 		stats:       stats,
+	}
+}
+
+func sizeOf(v any) int64 {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case string:
+		return int64(len(val))
+	case []byte:
+		return int64(len(val))
+	case int:
+		return 8
+	case int64:
+		return 8
+	case uint64:
+		return 8
+	case float64:
+		return 8
+	case int32:
+		return 4
+	case uint32:
+		return 4
+	case float32:
+		return 4
+	case int16:
+		return 2
+	case uint16:
+		return 2
+	case int8:
+		return 1
+	case uint8:
+		return 1
+	case bool:
+		return 1
+	default:
+		// Fallback to JSON length approximation
+		if data, err := json.Marshal(v); err == nil {
+			return int64(len(data))
+		}
+		return 0
 	}
 }
 
@@ -142,7 +190,54 @@ func (s *shard[K, V]) getWithTTL(key K, now time.Time) (V, time.Duration, bool) 
 	return e.value, remaining, true
 }
 
+func (s *shard[K, V]) evictToFit(requiredSize int64, now time.Time) {
+	for s.currentMemory+requiredSize > s.maxMemory && len(s.items) > 0 {
+		if !s.evictOne(ReasonEvicted) {
+			break
+		}
+	}
+}
+
+func (s *shard[K, V]) evictOne(reason EvictionReason) bool {
+	var evictKey K
+	var ok bool
+	if s.policy != nil {
+		evictKey, ok = s.policy.Evict()
+	} else {
+		// Fallback to first map key
+		for k := range s.items {
+			evictKey = k
+			ok = true
+			break
+		}
+	}
+
+	if ok {
+		if evEntry, exists := s.items[evictKey]; exists {
+			evSize := sizeOf(evEntry.value)
+			s.currentMemory -= evSize
+			atomic.AddInt64(&s.stats.MemoryBytes, -evSize)
+			val, _ := s.remove(evictKey, reason)
+			if s.onEvictedCb != nil {
+				s.onEvictedCb(evictKey, val, reason)
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func (s *shard[K, V]) set(key K, val V, ttl time.Duration, now time.Time) {
+	newSize := sizeOf(val)
+	if s.maxItemSize > 0 && newSize > s.maxItemSize {
+		atomic.AddInt64(&s.stats.RejectedSets, 1)
+		return
+	}
+	if s.maxMemory > 0 && newSize > s.maxMemory {
+		atomic.AddInt64(&s.stats.RejectedSets, 1)
+		return
+	}
+
 	s.mu.Lock()
 
 	var expiresAt time.Time
@@ -162,9 +257,33 @@ func (s *shard[K, V]) set(key K, val V, ttl time.Duration, now time.Time) {
 		callbackTrigger = true
 		callbackReason = ReasonUpdated
 
+		oldSize := sizeOf(e.value)
+		// Update memory tracker (subtract old size, add new size)
+		s.currentMemory -= oldSize
+		atomic.AddInt64(&s.stats.MemoryBytes, -oldSize)
+
+		// Check if the updated item exceeds memory limit
+		if s.maxMemory > 0 && s.currentMemory+newSize > s.maxMemory {
+			// Try to evict elements to make room
+			s.evictToFit(newSize, now)
+		}
+
+		// Recheck if it fits now
+		if s.maxMemory > 0 && s.currentMemory+newSize > s.maxMemory {
+			// If it still doesn't fit, we reject the update (and restore memory stats)
+			s.currentMemory += oldSize
+			atomic.AddInt64(&s.stats.MemoryBytes, oldSize)
+			atomic.AddInt64(&s.stats.RejectedSets, 1)
+			s.mu.Unlock()
+			return
+		}
+
 		e.value = val
 		e.expiresAt = expiresAt
 		e.lastAccess = now
+		s.currentMemory += newSize
+		atomic.AddInt64(&s.stats.MemoryBytes, newSize)
+
 		if s.policy != nil {
 			s.policy.OnInsert(key)
 		}
@@ -177,27 +296,21 @@ func (s *shard[K, V]) set(key K, val V, ttl time.Duration, now time.Time) {
 		return
 	}
 
-	// Enforce capacity limit
+	// For a new item: evict to fit capacity limit AND memory limit
 	if s.capacity > 0 && len(s.items) >= s.capacity {
-		if s.policy != nil {
-			if evictKey, ok := s.policy.Evict(); ok {
-				if evEntry, ok := s.items[evictKey]; ok {
-					callbackValue = evEntry.value
-					callbackTrigger = true
-					callbackReason = ReasonEvicted
-					s.remove(evictKey, ReasonEvicted)
-				}
-			}
-		} else {
-			// Evict first key from map iteration if no policy is set
-			for evictKey, evEntry := range s.items {
-				callbackValue = evEntry.value
-				callbackTrigger = true
-				callbackReason = ReasonEvicted
-				s.remove(evictKey, ReasonEvicted)
-				break
-			}
-		}
+		s.evictOne(ReasonEvicted)
+	}
+
+	if s.maxMemory > 0 && s.currentMemory+newSize > s.maxMemory {
+		s.evictToFit(newSize, now)
+	}
+
+	// Recheck if it fits now
+	if s.maxMemory > 0 && s.currentMemory+newSize > s.maxMemory {
+		// If it still doesn't fit, reject
+		atomic.AddInt64(&s.stats.RejectedSets, 1)
+		s.mu.Unlock()
+		return
 	}
 
 	s.items[key] = &entry[V]{
@@ -205,16 +318,14 @@ func (s *shard[K, V]) set(key K, val V, ttl time.Duration, now time.Time) {
 		expiresAt:  expiresAt,
 		lastAccess: now,
 	}
+	s.currentMemory += newSize
+	atomic.AddInt64(&s.stats.MemoryBytes, newSize)
 
 	if s.policy != nil {
 		s.policy.OnInsert(key)
 	}
 	atomic.AddInt64(&s.stats.Sets, 1)
 	s.mu.Unlock()
-
-	if callbackTrigger && s.onEvictedCb != nil {
-		s.onEvictedCb(key, callbackValue, callbackReason)
-	}
 }
 
 func (s *shard[K, V]) delete(key K) bool {
@@ -236,6 +347,12 @@ func (s *shard[K, V]) remove(key K, reason EvictionReason) (V, bool) {
 		return zero, false
 	}
 	delete(s.items, key)
+
+	// Subtract memory
+	itemSize := sizeOf(e.value)
+	s.currentMemory -= itemSize
+	atomic.AddInt64(&s.stats.MemoryBytes, -itemSize)
+
 	if s.policy != nil {
 		s.policy.OnRemove(key)
 	}
@@ -286,6 +403,11 @@ func (s *shard[K, V]) clear() {
 	if s.policy != nil {
 		s.policy.Clear()
 	}
+
+	// Reset memory
+	atomic.AddInt64(&s.stats.MemoryBytes, -s.currentMemory)
+	s.currentMemory = 0
+
 	s.mu.Unlock()
 
 	if s.onEvictedCb != nil {

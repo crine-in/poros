@@ -58,9 +58,16 @@ func New[K comparable, V any](config Config[K, V]) Cache[K, V] {
 		capacityPerShard = (config.Capacity + shardCount - 1) / shardCount
 	}
 
+	maxMemoryPerShard := int64(0)
+	if config.MaxMemory > 0 {
+		maxMemoryPerShard = (config.MaxMemory + int64(shardCount) - 1) / int64(shardCount)
+	}
+
 	for i := 0; i < shardCount; i++ {
 		c.shards[i] = newShard[K, V](
 			capacityPerShard,
+			config.MaxItemSize,
+			maxMemoryPerShard,
 			config.EvictionPolicy,
 			config.DefaultTTL,
 			config.DefaultTTI,
@@ -187,11 +194,13 @@ func (c *cacheImpl[K, V]) Len() int {
 
 func (c *cacheImpl[K, V]) Stats() Stats {
 	return Stats{
-		Hits:        atomic.LoadInt64(&c.stats.Hits),
-		Misses:      atomic.LoadInt64(&c.stats.Misses),
-		Sets:        atomic.LoadInt64(&c.stats.Sets),
-		Evictions:   atomic.LoadInt64(&c.stats.Evictions),
-		Expirations: atomic.LoadInt64(&c.stats.Expirations),
+		Hits:         atomic.LoadInt64(&c.stats.Hits),
+		Misses:       atomic.LoadInt64(&c.stats.Misses),
+		Sets:         atomic.LoadInt64(&c.stats.Sets),
+		Evictions:    atomic.LoadInt64(&c.stats.Evictions),
+		Expirations:  atomic.LoadInt64(&c.stats.Expirations),
+		RejectedSets: atomic.LoadInt64(&c.stats.RejectedSets),
+		MemoryBytes:  atomic.LoadInt64(&c.stats.MemoryBytes),
 	}
 }
 

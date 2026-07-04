@@ -288,3 +288,57 @@ func TestByteCache(t *testing.T) {
 		t.Error("expected Sets count to be > 0")
 	}
 }
+
+func TestCacheMemoryAndSizeLimits(t *testing.T) {
+	// 1. MaxItemSize
+	c := New(Config[string, string]{
+		Shards:      1,
+		MaxItemSize: 10, // 10 bytes
+	})
+	defer c.Close()
+
+	c.Set("small", "12345", 0) // 5 bytes
+	_, ok := c.Get("small")
+	if !ok {
+		t.Error("expected small item to be cached")
+	}
+
+	c.Set("too_big", "123456789012345", 0) // 15 bytes
+	_, ok = c.Get("too_big")
+	if ok {
+		t.Error("expected too big item to be rejected")
+	}
+
+	stats := c.Stats()
+	if stats.RejectedSets != 1 {
+		t.Errorf("expected 1 rejected set, got %d", stats.RejectedSets)
+	}
+
+	// 2. MaxMemory
+	c2 := New(Config[string, string]{
+		Shards:         1,
+		MaxMemory:      20, // 20 bytes total memory
+		EvictionPolicy: EvictionLRU,
+	})
+	defer c2.Close()
+
+	c2.Set("k1", "12345678", 0) // 8 bytes
+	c2.Set("k2", "12345678", 0) // 8 bytes
+	// current memory = 16 bytes. Fits perfectly.
+
+	c2.Set("k3", "12345678", 0) // 8 bytes -> triggers eviction of k1 (LRU)
+
+	_, ok = c2.Get("k1")
+	if ok {
+		t.Error("expected key k1 to be evicted to fit memory limit")
+	}
+
+	_, ok = c2.Get("k2")
+	if !ok {
+		t.Error("expected key k2 to remain")
+	}
+	_, ok = c2.Get("k3")
+	if !ok {
+		t.Error("expected key k3 to remain")
+	}
+}

@@ -43,6 +43,32 @@ func loadEnv() {
 	}
 }
 
+// parseSize parses human-readable byte sizes e.g. "500KB", "10MB", "2GB" into raw bytes.
+func parseSize(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+	var multiplier int64 = 1
+	if strings.HasSuffix(s, "KB") {
+		multiplier = 1024
+		s = strings.TrimSuffix(s, "KB")
+	} else if strings.HasSuffix(s, "MB") {
+		multiplier = 1024 * 1024
+		s = strings.TrimSuffix(s, "MB")
+	} else if strings.HasSuffix(s, "GB") {
+		multiplier = 1024 * 1024 * 1024
+		s = strings.TrimSuffix(s, "GB")
+	} else if strings.HasSuffix(s, "B") {
+		s = strings.TrimSuffix(s, "B")
+	}
+	var val int64
+	if _, err := fmt.Sscanf(s, "%d", &val); err != nil {
+		return 0, err
+	}
+	return val * multiplier, nil
+}
+
 func main() {
 	// Load environment variables from .env
 	loadEnv()
@@ -51,6 +77,8 @@ func main() {
 	port := flag.Int("port", 8080, "TCP port to listen on")
 	shards := flag.Int("shards", 0, "Number of cache shards (rounded up to nearest power of 2)")
 	capacity := flag.Int("capacity", 0, "Maximum cache capacity (0 = unlimited)")
+	maxItemSizeStr := flag.String("max-item-size", "0", "Maximum size of an individual item (e.g. 500KB, 10MB)")
+	maxMemoryStr := flag.String("max-memory", "0", "Maximum total memory cache is allowed to use (e.g. 100MB, 2GB)")
 	policyVal := flag.Int("policy", 3, "Eviction policy (0=LRU, 1=LFU, 2=FIFO, 3=None)")
 	defaultTTLStr := flag.String("ttl", "0s", "Default Time-To-Live duration (e.g. 5m, 1h, 0s = disabled)")
 	defaultTTIStr := flag.String("tti", "0s", "Default Time-To-Idle duration (e.g. 2m, 0s = disabled)")
@@ -58,15 +86,31 @@ func main() {
 
 	flag.Parse()
 
-	// Allow environment variable to override port if port remains at default
+	// Allow environment variables to override if command line remains at default
 	if envPort := os.Getenv("PORT"); envPort != "" && *port == 8080 {
 		var p int
 		if _, err := fmt.Sscanf(envPort, "%d", &p); err == nil {
 			*port = p
 		}
 	}
+	if envMaxItemSize := os.Getenv("MAX_ITEM_SIZE"); envMaxItemSize != "" && *maxItemSizeStr == "0" {
+		*maxItemSizeStr = envMaxItemSize
+	}
+	if envMaxMemory := os.Getenv("MAX_MEMORY"); envMaxMemory != "" && *maxMemoryStr == "0" {
+		*maxMemoryStr = envMaxMemory
+	}
 
-	// 2. Parse durations
+	// 2. Parse sizes and durations
+	maxItemSize, err := parseSize(*maxItemSizeStr)
+	if err != nil {
+		log.Fatalf("invalid max-item-size: %v", err)
+	}
+
+	maxMemory, err := parseSize(*maxMemoryStr)
+	if err != nil {
+		log.Fatalf("invalid max-memory: %v", err)
+	}
+
 	defaultTTL, err := time.ParseDuration(*defaultTTLStr)
 	if err != nil {
 		log.Fatalf("invalid default TTL duration: %v", err)
@@ -96,8 +140,8 @@ func main() {
 	}
 
 	log.Printf("Starting Poros cache daemon...")
-	log.Printf("Config -> Shards: %d, Capacity: %d, Policy: %d, DefaultTTL: %v, DefaultTTI: %v, Janitor: %v",
-		*shards, *capacity, policy, defaultTTL, defaultTTI, janitorInterval)
+	log.Printf("Config -> Shards: %d, Capacity: %d, MaxItemSize: %d bytes, MaxMemory: %d bytes, Policy: %d, DefaultTTL: %v, DefaultTTI: %v, Janitor: %v",
+		*shards, *capacity, maxItemSize, maxMemory, policy, defaultTTL, defaultTTI, janitorInterval)
 
 	authToken := os.Getenv("POROS_KEY")
 	if authToken != "" {
@@ -110,6 +154,8 @@ func main() {
 	cache := poros.New(poros.Config[string, any]{
 		Shards:          *shards,
 		Capacity:        *capacity,
+		MaxItemSize:     maxItemSize,
+		MaxMemory:       maxMemory,
 		EvictionPolicy:  policy,
 		DefaultTTL:      defaultTTL,
 		DefaultTTI:      defaultTTI,

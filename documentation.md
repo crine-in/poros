@@ -242,11 +242,30 @@ curl -i \
 #### Response (`200 OK`)
 ```json
 {
-  "hits": 10243,
-  "misses": 341,
-  "sets": 1502,
-  "evictions": 14,
-  "expirations": 42
+  "cache": {
+    "hits": 10243,
+    "misses": 341,
+    "sets": 1502,
+    "evictions": 14,
+    "expirations": 42,
+    "rejected_sets": 0,
+    "memory_bytes": 128450,
+    "hit_ratio": 0.9677,
+    "total_keys": 1446
+  },
+  "system": {
+    "active_goroutines": 8,
+    "cpu_cores": 12,
+    "go_version": "go1.24.4",
+    "heap_alloc_bytes": 346808,
+    "heap_sys_bytes": 3735552,
+    "num_gc": 2,
+    "total_alloc_bytes": 2045610
+  },
+  "process": {
+    "uptime": "2h15m3s",
+    "uptime_secs": 8103
+  }
 }
 ```
 

@@ -104,11 +104,15 @@ The daemon loads its configuration from a `.env` file at the root. Copy the temp
 ```bash
 cp .env.example .env
 ```
-Ensure `POROS_KEY` is configured. If present, all HTTP API endpoints require the header `Authorization: Bearer <key>`.
+Key configuration settings:
+* `PORT`: Bind port for the HTTP API (default: `8080`).
+* `POROS_KEY`: If present, all HTTP API endpoints require the header `Authorization: Bearer <key>`.
+* `MAX_ITEM_SIZE`: Maximum size allowed for a single item (e.g. `500KB`, `10MB`, `0` = unlimited).
+* `MAX_MEMORY`: Maximum memory the cache daemon can consume (e.g. `256MB`, `2GB`, `0` = unlimited).
 
 ### Start the Server
 ```bash
-go run cmd/porosd/main.go -port 8080 -shards 32 -capacity 100000 -policy 0
+go run cmd/porosd/main.go -port 8080 -shards 32 -capacity 100000 -max-item-size 10MB -max-memory 512MB -policy 0
 ```
 
 ### API Endpoints Spec (Requires `Authorization: Bearer <token>`)
